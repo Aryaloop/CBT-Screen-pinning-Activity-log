@@ -124,5 +124,74 @@ router.patch('/ujian/:id/status', async (req, res) => {
     res.status(500).json({ message: 'Gagal update status' });
   }
 });
+// 5. EDIT BUTIR SOAL
+// Route: PUT /api/guru/ujian/soal/:id
+// ==========================================
+router.put('/ujian/soal/:id', async (req, res) => {
+  const { id } = req.params; // ID Soal
+  const { teks_soal, opsi_jawaban, kunci_jawaban, bobot_nilai } = req.body;
+
+  try {
+    // Kita gunakan COALESCE di SQL atau logic JS agar field yang tidak dikirim tidak berubah jadi NULL
+    // Tapi cara paling gampang di Node.js seperti ini:
+    
+    // 1. Cek dulu soalnya ada gak
+    const oldSoal = await pool.query('SELECT * FROM butir_soal WHERE id_soal = $1', [id]);
+    if (oldSoal.rowCount === 0) return res.status(404).json({ message: 'Soal tidak ditemukan' });
+
+    // 2. Update
+    const result = await pool.query(
+      `UPDATE butir_soal 
+       SET teks_soal = COALESCE($1, teks_soal),
+           opsi_jawaban = COALESCE($2, opsi_jawaban),
+           kunci_jawaban = COALESCE($3, kunci_jawaban),
+           bobot_nilai = COALESCE($4, bobot_nilai)
+       WHERE id_soal = $5
+       RETURNING *`,
+      [teks_soal, opsi_jawaban, kunci_jawaban, bobot_nilai, id]
+    );
+
+    res.json({ message: 'Soal berhasil diupdate', data: result.rows[0] });
+  } catch (err) {
+    console.error("Edit Soal Error:", err);
+    res.status(500).json({ message: 'Gagal update soal' });
+  }
+});
+
+// ==========================================
+// 6. HAPUS BUTIR SOAL
+// Route: DELETE /api/guru/ujian/soal/:id
+// ==========================================
+router.delete('/ujian/soal/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query('DELETE FROM butir_soal WHERE id_soal = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Soal tidak ditemukan' });
+    
+    res.json({ message: 'Soal berhasil dihapus' });
+  } catch (err) {
+    res.status(500).json({ message: 'Gagal hapus soal' });
+  }
+});
+
+// ==========================================
+// 7. HAPUS PAKET UJIAN (Hati-hati: Cascade Delete)
+// Route: DELETE /api/guru/ujian/:id
+// ==========================================
+router.delete('/ujian/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Karena di database kita set ON DELETE CASCADE, 
+    // maka soal & sesi ujian terkait akan otomatis terhapus.
+    const result = await pool.query('DELETE FROM paket_ujian WHERE id_ujian = $1', [id]);
+    
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Ujian tidak ditemukan' });
+
+    res.json({ message: 'Paket ujian berhasil dihapus permanen' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Gagal menghapus ujian' });
+  }
+});
 
 export default router;
