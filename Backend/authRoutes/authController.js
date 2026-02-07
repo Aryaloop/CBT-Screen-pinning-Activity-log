@@ -1,32 +1,98 @@
 import express from 'express';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import pool from '../config/db.js';
 import generateToken from '../utils/jwtHelper.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { sendEmail } from '../utils/emailService.js';
+import { forgotPassLimiter } from '../middleware/rateLimiter.js';
+
 const router = express.Router();
+
+// ==========================================
+// 0. SETUP KUNCI RSA (Enkripsi)
+// ==========================================
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Pastikan folder 'keys' dan file 'private.pem' / 'public.pem' sudah digenerate sebelumnya
+const privateKeyPath = path.join(__dirname, '../keys/private.pem');
+const publicKeyPath = path.join(__dirname, '../keys/public.pem');
+
+// Baca kunci jika file ada
+let privateKey, publicKey;
+try {
+  privateKey = fs.readFileSync(privateKeyPath, 'utf8');
+  publicKey = fs.readFileSync(publicKeyPath, 'utf8');
+} catch (err) {
+  console.error("⚠️  PERINGATAN: Kunci RSA tidak ditemukan. Jalankan 'node utils/generateKeys.js' dulu.");
+}
+
+// Fungsi Bantuan: Dekripsi Data (Password)
+const decryptData = (encryptedData) => {
+  try {
+    if (!privateKey) throw new Error("Private Key missing");
+    
+    // PERBAIKAN DISINI:
+    // Ganti OAEP menjadi PKCS1_PADDING agar cocok dengan JSEncrypt Frontend
+    const decrypted = crypto.privateDecrypt(
+      {
+        key: privateKey,
+        padding: crypto.constants.RSA_PKCS1_PADDING, 
+        // Hapus baris oaepHash karena tidak dipakai di PKCS1
+      },
+      Buffer.from(encryptedData, 'base64')
+    );
+    return decrypted.toString('utf8');
+  } catch (error) {
+    console.error("Gagal dekripsi:", error.message);
+    return null; 
+  }
+};
+
+// ==========================================
+// ENDPOINT: GET PUBLIC KEY
+// URL: GET /api/auth/public-key
+// ==========================================
+router.get('/public-key', (req, res) => {
+  if (!publicKey) {
+    return res.status(500).json({ message: 'Kunci keamanan server belum siap.' });
+  }
+  res.json({ publicKey });
+});
 
 // ==========================================
 // 1. LOGIN KHUSUS WEB (Admin & Guru)
 // URL: POST /api/auth/login/web
 // ==========================================
 router.post('/login/web', async (req, res) => {
-  const { email, kata_sandi } = req.body;
+  const { email, kata_sandi } = req.body; // kata_sandi disini TERENKRIPSI (RSA)
 
   try {
-    if (!email || !kata_sandi) {
+    // A. Dekripsi Password
+    const passwordAsli = decryptData(kata_sandi);
+    if (!passwordAsli) {
+      return res.status(400).json({ message: 'Gagal mendekripsi password (Security Error)' });
+    }
+
+    if (!email || !passwordAsli) {
       return res.status(400).json({ message: 'Email dan Password wajib diisi' });
     }
 
+    // B. Cari User di DB
     const userQuery = await pool.query('SELECT * FROM pengguna WHERE email = $1', [email]);
     const user = userQuery.rows[0];
 
+    // C. Validasi User & Role
     if (!user || user.peran === 'siswa') {
       return res.status(401).json({ message: 'Email tidak ditemukan atau Anda bukan Admin/Guru' });
     }
 
-    if (await bcrypt.compare(kata_sandi, user.kata_sandi_hash)) {
+    // D. Bandingkan Password Asli vs Hash DB
+    if (await bcrypt.compare(passwordAsli, user.kata_sandi_hash)) {
       generateToken(res, user.id_pengguna, user.peran);
       res.json({
         id: user.id_pengguna,
@@ -49,13 +115,20 @@ router.post('/login/web', async (req, res) => {
 // URL: POST /api/auth/login/mobile
 // ==========================================
 router.post('/login/mobile', async (req, res) => {
-  const { nis, kata_sandi } = req.body;
+  const { nis, kata_sandi } = req.body; // kata_sandi disini TERENKRIPSI (RSA)
 
   try {
-    if (!nis || !kata_sandi) {
+    // A. Dekripsi Password
+    const passwordAsli = decryptData(kata_sandi);
+    if (!passwordAsli) {
+      return res.status(400).json({ message: 'Gagal mendekripsi password (Security Error)' });
+    }
+
+    if (!nis || !passwordAsli) {
       return res.status(400).json({ message: 'NIS dan Password wajib diisi' });
     }
 
+    // B. Cari User
     const userQuery = await pool.query(
       "SELECT * FROM pengguna WHERE nama_pengguna = $1 AND peran = 'siswa'", 
       [nis]
@@ -66,7 +139,8 @@ router.post('/login/mobile', async (req, res) => {
       return res.status(401).json({ message: 'NIS tidak ditemukan' });
     }
 
-    if (await bcrypt.compare(kata_sandi, user.kata_sandi_hash)) {
+    // C. Bandingkan Password
+    if (await bcrypt.compare(passwordAsli, user.kata_sandi_hash)) {
       generateToken(res, user.id_pengguna, user.peran);
       res.json({
         id: user.id_pengguna,
@@ -95,7 +169,6 @@ router.post('/logout', (req, res) => {
 // ==========================================
 // 4. CHECK SESSION (ME) - PRIVATE
 // URL: GET /api/auth/me
-// Perhatikan: Middleware 'protect' dipasang langsung di sini
 // ==========================================
 router.get('/me', protect, async (req, res) => {
   try {
@@ -114,10 +187,11 @@ router.get('/me', protect, async (req, res) => {
 });
 
 // ==========================================
-// 5. FORGOT PASSWORD
+// 5. FORGOT PASSWORD (DENGAN RATE LIMITER)
 // URL: POST /api/auth/forgot-password
 // ==========================================
-router.post('/forgot-password', async (req, res) => {
+// Perhatikan: forgotPassLimiter diselipkan di parameter kedua
+router.post('/forgot-password', forgotPassLimiter, async (req, res) => {
   const { email } = req.body;
   try {
     const userQuery = await pool.query('SELECT * FROM pengguna WHERE email = $1', [email]);
@@ -128,27 +202,22 @@ router.post('/forgot-password', async (req, res) => {
     }
 
     const resetToken = crypto.randomBytes(20).toString('hex');
-    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 Jam
+    const resetTokenExpiry = new Date(Date.now() + 3600000); 
 
     await pool.query(
       'UPDATE pengguna SET reset_token = $1, reset_token_expiry = $2 WHERE email = $3',
       [resetToken, resetTokenExpiry, email]
     );
 
-    // Link yang mengarah ke Frontend React
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-
-    // HTML Email Template
     const message = `
       <h3>Permintaan Reset Password</h3>
-      <p>Anda menerima email ini karena ada permintaan reset password untuk akun Anda.</p>
-      <p>Silakan klik tombol di bawah ini:</p>
+      <p>Klik tombol di bawah untuk mereset password akun Anda:</p>
       <a href="${resetUrl}" style="background:#4CAF50; color:white; padding:10px 20px; text-decoration:none; border-radius:5px;">Reset Password</a>
-      <p>Atau copy link ini: ${resetUrl}</p>
-      <p>Link ini akan kadaluwarsa dalam 1 jam.</p>
+      <p>Atau buka link ini: ${resetUrl}</p>
+      <p>Link kadaluwarsa dalam 1 jam.</p>
     `;
 
-    // KIRIM EMAIL ASLI
     await sendEmail(user.email, 'Reset Password - Ujian Sekolah', message);
 
     res.json({ message: 'Link reset password telah dikirim ke email.' });
@@ -159,14 +228,22 @@ router.post('/forgot-password', async (req, res) => {
 });
 
 // ==========================================
-// 6. RESET PASSWORD
+// 6. RESET PASSWORD (DENGAN RSA)
 // URL: POST /api/auth/reset-password/:token
 // ==========================================
 router.post('/reset-password/:token', async (req, res) => {
   const { token } = req.params;
-  const { password_baru } = req.body;
+  const { password_baru } = req.body; // Ini diharapkan TERENKRIPSI dari Frontend
 
   try {
+    // 1. DEKRIPSI PASSWORD BARU DULU (Tambahan Security)
+    const passwordAsli = decryptData(password_baru);
+    
+    if (!passwordAsli) {
+      return res.status(400).json({ message: 'Gagal mendekripsi password (Security Error)' });
+    }
+
+    // 2. Cari user dengan token valid
     const userQuery = await pool.query(
       `SELECT * FROM pengguna WHERE reset_token = $1 AND reset_token_expiry > NOW()`,
       [token]
@@ -174,12 +251,14 @@ router.post('/reset-password/:token', async (req, res) => {
     const user = userQuery.rows[0];
 
     if (!user) {
-      return res.status(400).json({ message: 'Token tidak valid/expired' });
+      return res.status(400).json({ message: 'Token tidak valid atau sudah kadaluwarsa' });
     }
 
+    // 3. Hash Password yang sudah didekripsi
     const salt = await bcrypt.genSalt(10);
-    const newHash = await bcrypt.hash(password_baru, salt);
+    const newHash = await bcrypt.hash(passwordAsli, salt); // Hash passwordAsli, bukan password_baru (enkripsi)
 
+    // 4. Update Database
     await pool.query(
       `UPDATE pengguna SET kata_sandi_hash = $1, reset_token = NULL, reset_token_expiry = NULL WHERE id_pengguna = $2`,
       [newHash, user.id_pengguna]
@@ -187,6 +266,7 @@ router.post('/reset-password/:token', async (req, res) => {
 
     res.json({ message: 'Password berhasil diubah. Silakan login.' });
   } catch (err) {
+    console.error("Reset Pass Error:", err); // Log error biar tau kenapa
     res.status(500).json({ message: 'Gagal mereset password' });
   }
 });
