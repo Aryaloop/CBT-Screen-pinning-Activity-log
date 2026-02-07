@@ -108,48 +108,6 @@ router.get('/ujian/:id/soal', async (req, res) => {
 });
 
 // ==========================================
-// 4. SYNC JAWABAN (Background Worker)
-// Route: POST /api/siswa/ujian/sync
-// ==========================================
-router.post('/ujian/sync', async (req, res) => {
-  const { id_sesi, jawaban } = req.body; // jawaban = Array of objects
-  const id_siswa = req.user.id;
-
-  if (!jawaban || !Array.isArray(jawaban)) {
-    return res.status(400).json({ message: 'Format data salah' });
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    // Loop jawaban dan Upsert (Insert or Update)
-    for (const jwb of jawaban) {
-      await client.query(
-        `INSERT INTO jawaban_siswa (id_sesi, id_soal, id_siswa, opsi_dipilih, waktu_klien)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id_sesi, id_soal) 
-         DO UPDATE SET 
-            opsi_dipilih = EXCLUDED.opsi_dipilih,
-            waktu_klien = EXCLUDED.waktu_klien,
-            sudah_sinkron = true`,
-        [id_sesi, jwb.id_soal, id_siswa, jwb.opsi_dipilih, jwb.waktu_klien]
-      );
-    }
-
-    await client.query('COMMIT');
-    res.json({ message: 'Sinkronisasi berhasil' });
-
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error(err);
-    res.status(500).json({ message: 'Gagal sinkronisasi' });
-  } finally {
-    client.release();
-  }
-});
-
-// ==========================================
 // 5. LAPOR PELANGGARAN (Log Security)
 // Route: POST /api/siswa/ujian/log
 // ==========================================

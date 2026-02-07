@@ -1,7 +1,7 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
 import guruUjianRoutes from './guruUjian.js';
-
+import guruRekapRoutes from './guruRekap.js'; // IMPORT BARU
 const router = express.Router();
 
 // Middleware Khusus GURU
@@ -20,5 +20,7 @@ router.use(verifyGuru); // Wajib Role Guru
 
 // Pasang Route Pecahan
 router.use('/', guruUjianRoutes);
+router.use('/', guruRekapRoutes);
+
 
 export default router;
