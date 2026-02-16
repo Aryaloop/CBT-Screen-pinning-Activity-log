@@ -128,23 +128,50 @@ router.post('/ujian/log', async (req, res) => {
 });
 
 // ==========================================
-// 6. SELESAI UJIAN
+// 6. SELESAI UJIAN (Hitung Nilai Otomatis)
 // Route: POST /api/siswa/ujian/selesai
 // ==========================================
 router.post('/ujian/selesai', async (req, res) => {
   const { id_sesi } = req.body;
   
   try {
-    // Update status sesi jadi selesai
-    await pool.query(
-      "UPDATE sesi_ujian SET status = 'selesai', waktu_selesai = NOW() WHERE id_sesi = $1",
-      [id_sesi]
-    );
+    // 1. Dapatkan id_ujian dari sesi ini
+    const sesiRes = await pool.query("SELECT id_ujian FROM sesi_ujian WHERE id_sesi = $1", [id_sesi]);
+    if(sesiRes.rowCount === 0) return res.status(404).json({message: 'Sesi tidak ditemukan'});
+    const id_ujian = sesiRes.rows[0].id_ujian;
 
-    // TODO: Hitung Nilai Otomatis di sini (Nanti bisa ditambahkan)
+    // 2. Hitung Total Skor Siswa (Mencocokkan jawaban_siswa & butir_soal)
+    const skorRes = await pool.query(`
+      SELECT COALESCE(SUM(b.bobot_nilai), 0) as total_skor
+      FROM jawaban_siswa j
+      JOIN butir_soal b ON j.id_soal = b.id_soal
+      WHERE j.id_sesi = $1 AND j.opsi_dipilih = b.kunci_jawaban
+    `, [id_sesi]);
     
-    res.json({ message: 'Ujian selesai. Terima kasih.' });
+    // 3. Hitung Skor Maksimal (Jika benar semua)
+    const maxRes = await pool.query(`
+      SELECT COALESCE(SUM(bobot_nilai), 0) as max_skor
+      FROM butir_soal WHERE id_ujian = $1
+    `, [id_ujian]);
+
+    const skorSiswa = parseFloat(skorRes.rows[0].total_skor);
+    const skorMax = parseFloat(maxRes.rows[0].max_skor);
+    
+    // 4. Kalkulasi Nilai Akhir (Skala 100)
+    let nilaiAkhir = 0;
+    if (skorMax > 0) {
+      nilaiAkhir = (skorSiswa / skorMax) * 100;
+    }
+
+    // 5. Update status sesi, waktu selesai, dan simpan nilai
+    await pool.query(
+      "UPDATE sesi_ujian SET status = 'selesai', waktu_selesai = NOW(), nilai_akhir = $1 WHERE id_sesi = $2",
+      [nilaiAkhir.toFixed(2), id_sesi]
+    );
+    
+    res.json({ message: 'Ujian selesai. Nilai berhasil dikalkulasi.', nilai: nilaiAkhir.toFixed(2) });
   } catch (err) {
+    console.error("Gagal Selesai Ujian:", err);
     res.status(500).json({ message: 'Gagal menyelesaikan ujian' });
   }
 });

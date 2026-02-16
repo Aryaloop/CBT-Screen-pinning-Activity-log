@@ -35,3 +35,15 @@ Backend/
 ├── node_modules/
 ├── app.js                      ← Entry Point (Server Utama)
 └── package.json
+
+src/
+├── layouts/
+│   └── MainLayout.jsx      <-- Kerangka Utama (Wrapper agar tidak perlu copy-paste sidebar di setiap halaman)
+├── components/
+│   ├── Sidebar.jsx         <-- Navigasi (Beda Admin/Guru)(Membedakan menu berdasarkan Role User)
+│   └── Table.jsx           <-- Reusable Component untuk Data
+├── pages/
+│   ├── admin/
+│   │   └── DashboardSiswa.jsx
+│   └── guru/
+│       └── DashboardUjian.jsx

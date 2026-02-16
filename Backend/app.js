@@ -11,15 +11,31 @@ import guruMainRoutes from './guruRoutes/guruRoutes.js'; // <--- Import modul Gu
 import siswaMainRoutes from './siswaRoutes/siswaRoutes.js';
 import timeRouter from './utils/timeHelper.js'; 
 dotenv.config();
-const app = express();
 
-// CORS
+const app = express();
+app.set('trust proxy', 1);
+// UPDATE BAGIAN INI DI app.js
 app.use(cors({
-  // Kita izinkan port 5173 (Vite Default) DAN port 3000 (React Custom)
-  origin: ['http://localhost:5173', 'http://localhost:3000'], 
-  credentials: true, // WAJIB: Agar cookie token bisa lewat
+  origin: function (origin, callback) {
+    // Izinkan request tanpa origin (seperti Mobile App / Postman)
+    if (!origin) return callback(null, true);
+    
+    // Daftar domain yang diizinkan
+    const allowedOrigins = [
+      'http://localhost:5173', // Frontend Vite
+      'http://localhost:3000', // React Custom
+      'https://pdnpdr2p-5000.asse.devtunnels.ms' // <--- MASUKKAN URL TUNNEL ANDA
+    ];
+
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('.devtunnels.ms')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true, // WAJIB: Agar Android bisa simpan Cookie JWT
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tunnel-Skip-Anti-Phishing-Page'] // Tambahan header tunnel
 }));
 
 // Middleware

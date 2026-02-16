@@ -8,7 +8,7 @@ import pool from '../config/db.js';
 import generateToken from '../utils/jwtHelper.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { sendEmail } from '../utils/emailService.js';
-import { forgotPassLimiter } from '../middleware/rateLimiter.js';
+import { loginLimiter } from '../middleware/rateLimiter.js';
 
 const router = express.Router();
 
@@ -68,7 +68,7 @@ router.get('/public-key', (req, res) => {
 // 1. LOGIN KHUSUS WEB (Admin & Guru)
 // URL: POST /api/auth/login/web
 // ==========================================
-router.post('/login/web', async (req, res) => {
+router.post('/login/web',loginLimiter, async (req, res) => {
   const { email, kata_sandi } = req.body; // kata_sandi disini TERENKRIPSI (RSA)
 
   try {
@@ -114,7 +114,7 @@ router.post('/login/web', async (req, res) => {
 // 2. LOGIN KHUSUS MOBILE (Siswa)
 // URL: POST /api/auth/login/mobile
 // ==========================================
-router.post('/login/mobile', async (req, res) => {
+router.post('/login/mobile',loginLimiter, async (req, res) => {
   const { nis, kata_sandi } = req.body; // kata_sandi disini TERENKRIPSI (RSA)
 
   try {
@@ -187,40 +187,65 @@ router.get('/me', protect, async (req, res) => {
 });
 
 // ==========================================
-// 5. FORGOT PASSWORD (DENGAN RATE LIMITER)
+// 5. FORGOT PASSWORD (SMART LIMITER)
 // URL: POST /api/auth/forgot-password
 // ==========================================
-// Perhatikan: forgotPassLimiter diselipkan di parameter kedua
-router.post('/forgot-password', forgotPassLimiter, async (req, res) => {
+router.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
   try {
     const userQuery = await pool.query('SELECT * FROM pengguna WHERE email = $1', [email]);
     const user = userQuery.rows[0];
 
+    // 1. Cek Email Terdaftar
     if (!user) {
-      return res.status(404).json({ message: 'Email tidak terdaftar' });
+      // UX Security: Sebaiknya jangan kasih tau "Email tidak terdaftar" secara eksplisit 
+      // agar hacker ga bisa farming email. Tapi untuk skripsi/testing boleh return 404.
+      // Sesuai request kamu: "kalau gk ada emailnya terdaftar ya gk usah timer"
+      return res.status(404).json({ message: 'Email tidak terdaftar dalam sistem.' });
     }
 
+    // 2. Cek Cooldown (Manual Rate Limit per User)
+    // Kita cek kolom 'reset_token_expiry' atau buat kolom baru 'last_reset_request'
+    // Tapi cara paling gampang: Cek apakah user punya token aktif yang dibuat < 3 menit lalu?
+    
+    // Logikanya: Token expiry kan 1 jam (3600 detik). 
+    // Jika expiry - now > (1 jam - 3 menit), berarti dia baru aja request.
+    if (user.reset_token_expiry) {
+      const now = new Date();
+      const expiry = new Date(user.reset_token_expiry);
+      const diffMenit = (expiry - now) / 1000 / 60; // Selisih dalam menit
+
+      // Jika sisa waktu expiry masih di atas 57 menit (artinya baru request < 3 menit lalu)
+      if (diffMenit > 57) { 
+        return res.status(429).json({ 
+          message: 'Mohon tunggu 3 menit sebelum meminta link baru.',
+          remaining: Math.ceil((diffMenit - 57) * 60) // Kirim sisa detik ke frontend
+        });
+      }
+    }
+
+    // 3. Generate Token Baru
     const resetToken = crypto.randomBytes(20).toString('hex');
-    const resetTokenExpiry = new Date(Date.now() + 3600000); 
+    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 Jam dari sekarang
 
     await pool.query(
       'UPDATE pengguna SET reset_token = $1, reset_token_expiry = $2 WHERE email = $3',
       [resetToken, resetTokenExpiry, email]
     );
 
+    // 4. Kirim Email
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
     const message = `
       <h3>Permintaan Reset Password</h3>
       <p>Klik tombol di bawah untuk mereset password akun Anda:</p>
       <a href="${resetUrl}" style="background:#4CAF50; color:white; padding:10px 20px; text-decoration:none; border-radius:5px;">Reset Password</a>
-      <p>Atau buka link ini: ${resetUrl}</p>
       <p>Link kadaluwarsa dalam 1 jam.</p>
     `;
 
     await sendEmail(user.email, 'Reset Password - Ujian Sekolah', message);
 
     res.json({ message: 'Link reset password telah dikirim ke email.' });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Gagal memproses permintaan' });

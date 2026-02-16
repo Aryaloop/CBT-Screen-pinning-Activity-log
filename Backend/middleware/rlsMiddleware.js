@@ -11,14 +11,15 @@ export const setRlsContext = async (req, res, next) => {
   // setting ini mungkin tidak bertahan ke query berikutnya secara otomatis 
   // kecuali kita menggunakan 'transaction client' yang sama.
   // Namun, kita siapkan ini untuk kepatuhan struktur.
-  
+
   try {
-    // Kita set variabel sesi postgres (hanya efektif jika dalam satu client session)
-    // Query ini ringan.
-    await pool.query("SET SESSION app.current_user_id = $1", [req.user.id]);
-    next();
-  } catch (err) {
-    console.error("Gagal set RLS Context:", err);
+  // Kita set variabel sesi postgres (hanya efektif jika dalam satu client session)
+  // Query ini ringan.
+  // PERBAIKAN: Gunakan SELECT set_config alih-alih SET SESSION
+  await pool.query("SELECT set_config('app.current_user_id', $1, false)", [req.user.id]);
+  next();
+} catch (err) {
+  console.error("Gagal set RLS Context:", err.message);
     // Jangan crash, lanjut saja (RLS di DB akan default memblokir jika null)
     next();
   }

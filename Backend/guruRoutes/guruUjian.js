@@ -15,21 +15,16 @@ const generateExamToken = () => {
 // ==========================================
 router.post('/ujian', async (req, res) => {
   const { judul, durasi_menit } = req.body;
-  const id_guru = req.user.id; // Didapat dari token JWT
+  const id_guru = req.user.id; 
 
   try {
-    // Generate Token Unik
     let kode_token = generateExamToken();
     let isUnique = false;
 
-    // Pastikan token belum dipakai (Looping cek sederhana)
     while (!isUnique) {
       const check = await pool.query('SELECT 1 FROM paket_ujian WHERE kode_token = $1', [kode_token]);
-      if (check.rowCount === 0) {
-        isUnique = true;
-      } else {
-        kode_token = generateExamToken();
-      }
+      if (check.rowCount === 0) isUnique = true;
+      else kode_token = generateExamToken();
     }
 
     const result = await pool.query(
@@ -39,11 +34,7 @@ router.post('/ujian', async (req, res) => {
       [id_guru, judul, kode_token, durasi_menit]
     );
 
-    res.status(201).json({
-      message: 'Paket ujian berhasil dibuat',
-      data: result.rows[0]
-    });
-
+    res.status(201).json({ message: 'Paket ujian berhasil dibuat', data: result.rows[0] });
   } catch (err) {
     console.error("Buat Ujian Error:", err);
     res.status(500).json({ message: 'Gagal membuat paket ujian' });
@@ -51,68 +42,156 @@ router.post('/ujian', async (req, res) => {
 });
 
 // ==========================================
-// 2. TAMBAH BUTIR SOAL KE UJIAN
-// Route: POST /api/guru/ujian/:id/soal
+// 2. LIHAT SEMUA UJIAN (List Dashboard)
+// Route: GET /api/guru/ujian
 // ==========================================
-router.post('/ujian/:id/soal', async (req, res) => {
-  const { id } = req.params; // ID Ujian
-  const { teks_soal, tipe_soal, opsi_jawaban, kunci_jawaban, bobot_nilai } = req.body;
-  
-  // Security: Pastikan ujian ini milik guru yang sedang login
-  // (Optional tapi disarankan)
-
+router.get('/ujian', async (req, res) => {
+  const id_guru = req.user.id;
   try {
-    // Insert Soal
-    // opsi_jawaban dikirim dalam bentuk JSON Object { A: "...", B: "..." }
-    // PostgreSQL JSONB akan otomatis menangani object JS
-    const result = await pool.query(
-      `INSERT INTO butir_soal (id_ujian, teks_soal, tipe_soal, opsi_jawaban, kunci_jawaban, bobot_nilai)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [id, teks_soal, tipe_soal || 'pilihan_ganda', opsi_jawaban, kunci_jawaban, bobot_nilai || 1]
-    );
-
-    res.status(201).json({
-      message: 'Soal berhasil ditambahkan',
-      data: result.rows[0]
-    });
-
+    const query = `
+      SELECT id_ujian, judul, kode_token, durasi_menit, apakah_aktif, dibuat_pada 
+      FROM paket_ujian 
+      WHERE dibuat_oleh = $1 
+      ORDER BY dibuat_pada DESC
+    `;
+    const result = await pool.query(query, [id_guru]);
+    res.json(result.rows);
   } catch (err) {
-    console.error("Tambah Soal Error:", err);
-    res.status(500).json({ message: 'Gagal menambahkan soal' });
+    console.error(err);
+    res.status(500).json({ message: 'Gagal memuat daftar ujian' });
   }
 });
 
 // ==========================================
-// 3. GET DETAIL UJIAN & SOALNYA (Untuk Preview Guru)
+// 3. GET DETAIL UJIAN & SOALNYA
 // Route: GET /api/guru/ujian/:id
 // ==========================================
 router.get('/ujian/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    // Ambil Header
     const ujianRes = await pool.query('SELECT * FROM paket_ujian WHERE id_ujian = $1', [id]);
     if (ujianRes.rowCount === 0) return res.status(404).json({ message: 'Ujian tidak ditemukan' });
 
-    // Ambil Soal-soalnya
     const soalRes = await pool.query('SELECT * FROM butir_soal WHERE id_ujian = $1 ORDER BY id_soal ASC', [id]);
+
+    // Format ulang data untuk frontend
+    const formattedSoal = soalRes.rows.map(soal => ({
+      ...soal,
+      // Jika tipe essay, opsi mungkin null/kosong
+      opsi_a: soal.opsi_jawaban?.A || '',
+      opsi_b: soal.opsi_jawaban?.B || '',
+      opsi_c: soal.opsi_jawaban?.C || '',
+      opsi_d: soal.opsi_jawaban?.D || '',
+      opsi_e: soal.opsi_jawaban?.E || '',
+      pertanyaan: soal.teks_soal, 
+      jawaban_benar: soal.kunci_jawaban,
+      bobot_nilai: soal.bobot_nilai // Pastikan bobot terkirim
+    }));
 
     res.json({
       ujian: ujianRes.rows[0],
-      soal: soalRes.rows
+      soal: formattedSoal
     });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Gagal mengambil data ujian' });
   }
 });
 
 // ==========================================
-// 4. AKTIFKAN / NON-AKTIFKAN UJIAN
+// 4. TAMBAH BUTIR SOAL BARU (Support Bobot & Tipe)
+// Route: POST /api/guru/ujian/soal
+// ==========================================
+router.post('/ujian/soal', async (req, res) => {
+  const { 
+    id_ujian, 
+    tipe_soal, // 'pilihan_ganda' atau 'essay'
+    pertanyaan, 
+    opsi_a, opsi_b, opsi_c, opsi_d, opsi_e, 
+    jawaban_benar,
+    bobot_nilai // TAMBAHAN: Input Bobot Nilai
+  } = req.body;
+
+  try {
+    if (!id_ujian || !pertanyaan) {
+      return res.status(400).json({ message: 'Data soal tidak lengkap' });
+    }
+
+    // Default tipe soal jika tidak dikirim
+    const jenis = tipe_soal || 'pilihan_ganda';
+    
+    // Default bobot jika tidak dikirim
+    const bobot = bobot_nilai || 1; 
+
+    // Jika Essay, opsi boleh kosong (null) atau {}
+    let opsiJson = {};
+    if (jenis === 'pilihan_ganda') {
+        opsiJson = { A: opsi_a, B: opsi_b, C: opsi_c, D: opsi_d, E: opsi_e };
+    }
+
+    const query = `
+      INSERT INTO butir_soal 
+      (id_ujian, tipe_soal, teks_soal, opsi_jawaban, kunci_jawaban, bobot_nilai)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+    `;
+    
+    const values = [
+      id_ujian, 
+      jenis, 
+      pertanyaan, 
+      opsiJson,   
+      jawaban_benar, // Untuk Essay, ini bisa jadi "Kunci Jawaban Guru" (Text)
+      bobot
+    ];
+
+    const result = await pool.query(query, values);
+    
+    res.status(201).json({ message: 'Soal berhasil ditambahkan', data: result.rows[0] });
+
+  } catch (err) {
+    console.error("Tambah Soal Error:", err);
+    res.status(500).json({ message: 'Gagal menyimpan soal' });
+  }
+});
+
+// ==========================================
+// 5. HAPUS BUTIR SOAL
+// Route: DELETE /api/guru/ujian/soal/:id
+// ==========================================
+router.delete('/ujian/soal/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query('DELETE FROM butir_soal WHERE id_soal = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Soal tidak ditemukan' });
+    res.json({ message: 'Soal berhasil dihapus' });
+  } catch (err) {
+    res.status(500).json({ message: 'Gagal hapus soal' });
+  }
+});
+
+// ==========================================
+// 6. HAPUS PAKET UJIAN
+// Route: DELETE /api/guru/ujian/:id
+// ==========================================
+router.delete('/ujian/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query('DELETE FROM paket_ujian WHERE id_ujian = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Ujian tidak ditemukan' });
+    res.json({ message: 'Paket ujian berhasil dihapus permanen' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Gagal menghapus ujian' });
+  }
+});
+// ==========================================
+// 7. UBAH STATUS AKTIF UJIAN
 // Route: PATCH /api/guru/ujian/:id/status
 // ==========================================
 router.patch('/ujian/:id/status', async (req, res) => {
   const { id } = req.params;
-  const { apakah_aktif } = req.body; // boolean true/false
+  const { apakah_aktif } = req.body; // Menerima true / false dari frontend
 
   try {
     const result = await pool.query(
@@ -121,77 +200,8 @@ router.patch('/ujian/:id/status', async (req, res) => {
     );
     res.json({ message: 'Status ujian diperbarui', data: result.rows[0] });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Gagal update status' });
   }
 });
-// 5. EDIT BUTIR SOAL
-// Route: PUT /api/guru/ujian/soal/:id
-// ==========================================
-router.put('/ujian/soal/:id', async (req, res) => {
-  const { id } = req.params; // ID Soal
-  const { teks_soal, opsi_jawaban, kunci_jawaban, bobot_nilai } = req.body;
-
-  try {
-    // Kita gunakan COALESCE di SQL atau logic JS agar field yang tidak dikirim tidak berubah jadi NULL
-    // Tapi cara paling gampang di Node.js seperti ini:
-    
-    // 1. Cek dulu soalnya ada gak
-    const oldSoal = await pool.query('SELECT * FROM butir_soal WHERE id_soal = $1', [id]);
-    if (oldSoal.rowCount === 0) return res.status(404).json({ message: 'Soal tidak ditemukan' });
-
-    // 2. Update
-    const result = await pool.query(
-      `UPDATE butir_soal 
-       SET teks_soal = COALESCE($1, teks_soal),
-           opsi_jawaban = COALESCE($2, opsi_jawaban),
-           kunci_jawaban = COALESCE($3, kunci_jawaban),
-           bobot_nilai = COALESCE($4, bobot_nilai)
-       WHERE id_soal = $5
-       RETURNING *`,
-      [teks_soal, opsi_jawaban, kunci_jawaban, bobot_nilai, id]
-    );
-
-    res.json({ message: 'Soal berhasil diupdate', data: result.rows[0] });
-  } catch (err) {
-    console.error("Edit Soal Error:", err);
-    res.status(500).json({ message: 'Gagal update soal' });
-  }
-});
-
-// ==========================================
-// 6. HAPUS BUTIR SOAL
-// Route: DELETE /api/guru/ujian/soal/:id
-// ==========================================
-router.delete('/ujian/soal/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    const result = await pool.query('DELETE FROM butir_soal WHERE id_soal = $1', [id]);
-    if (result.rowCount === 0) return res.status(404).json({ message: 'Soal tidak ditemukan' });
-    
-    res.json({ message: 'Soal berhasil dihapus' });
-  } catch (err) {
-    res.status(500).json({ message: 'Gagal hapus soal' });
-  }
-});
-
-// ==========================================
-// 7. HAPUS PAKET UJIAN (Hati-hati: Cascade Delete)
-// Route: DELETE /api/guru/ujian/:id
-// ==========================================
-router.delete('/ujian/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    // Karena di database kita set ON DELETE CASCADE, 
-    // maka soal & sesi ujian terkait akan otomatis terhapus.
-    const result = await pool.query('DELETE FROM paket_ujian WHERE id_ujian = $1', [id]);
-    
-    if (result.rowCount === 0) return res.status(404).json({ message: 'Ujian tidak ditemukan' });
-
-    res.json({ message: 'Paket ujian berhasil dihapus permanen' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Gagal menghapus ujian' });
-  }
-});
-
 export default router;
