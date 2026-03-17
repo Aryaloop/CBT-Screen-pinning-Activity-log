@@ -3,6 +3,7 @@ import { protect } from '../middleware/authMiddleware.js';
 import { setRlsContext } from '../middleware/rlsMiddleware.js'; // Pasang Middleware RLS disini
 import siswaUjianRoutes from './siswaUjian.js';
 import siswaSyncRoutes from './siswaSync.js';
+import siswaProfileRoutes from './siswaProfile.js';
 const router = express.Router();
 
 // Middleware Khusus Siswa
@@ -20,5 +21,6 @@ router.use(setRlsContext); // Aktifkan RLS Context tiap request siswa
 // Route pecahan
 router.use('/', siswaUjianRoutes);
 router.use('/', siswaSyncRoutes);
+router.use('/', siswaProfileRoutes);
 
 export default router;

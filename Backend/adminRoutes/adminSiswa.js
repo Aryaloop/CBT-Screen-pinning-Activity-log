@@ -103,4 +103,30 @@ router.delete('/siswa/:id', async (req, res) => {
   }
 });
 
+
+// ==========================================
+// LOGIC: EDIT DATA SISWA
+// Route: PUT /api/admin/siswa/:id
+// ==========================================
+router.put('/siswa/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nama, kelas } = req.body; // NIS tidak diedit untuk menjaga integritas login
+
+    const result = await pool.query(
+      `UPDATE siswa SET nama_lengkap = $1, nama_kelas = $2 WHERE id_siswa = $3 RETURNING *`,
+      [nama, kelas, id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Data siswa tidak ditemukan' });
+    }
+
+    res.json({ message: 'Data siswa berhasil diperbarui', data: result.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Gagal memperbarui data siswa' });
+  }
+});
+
 export default router;

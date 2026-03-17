@@ -2,7 +2,7 @@ import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
 import adminSiswaRoutes from './adminSiswa.js';
 import adminGuruRoutes from './adminGuru.js'; // Nanti jika sudah dibuat
-
+import adminKelasRoutes from './adminKelas.js'
 const router = express.Router();
 
   // Middleware Khusus Admin (Bisa dipasang disini agar semua sub-route kena)
@@ -22,5 +22,6 @@ router.use(verifyAdmin); // Harus Role Admin
   // Perhatikan: di adminSiswa.js kita definisikan '/siswa', jadi disini cukup use()
 router.use(adminSiswaRoutes); 
 router.use(adminGuruRoutes); // <-- Pasang modul baru
+router.use(adminKelasRoutes); // <--- 2. DAFTARKAN ROUTE KELAS DISINI
 
 export default router;

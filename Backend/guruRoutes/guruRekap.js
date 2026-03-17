@@ -21,9 +21,12 @@ router.get('/rekap/:id', async (req, res) => {
         sesi.waktu_selesai, 
         sesi.nilai_akhir,
         sesi.status,
+        p.durasi_menit, 
+        NOW() as waktu_server_sekarang, 
         (SELECT COUNT(*) FROM log_pelanggaran lp WHERE lp.id_sesi = sesi.id_sesi) as jumlah_pelanggaran
       FROM sesi_ujian sesi
       JOIN siswa s ON sesi.id_siswa = s.id_siswa
+      JOIN paket_ujian p ON sesi.id_ujian = p.id_ujian 
       WHERE sesi.id_ujian = $1
       ORDER BY sesi.status ASC, sesi.nilai_akhir DESC
     `;
